@@ -1,14 +1,18 @@
+/* ===========================================================================
+   app3.js — fenêtres, connexion, fiche client, événements
+   =========================================================================== */
+
 /* ---------------------------------------------------------------------------
    Fenêtres modales et utilitaires
    --------------------------------------------------------------------------- */
 let modalEl = null;
 let modalOnClose = null;
-function modal(html, onClose = null) {
+function modal(html, onClose = null, cls = "") {
   closeModal();
   modalOnClose = onClose;
   modalEl = document.createElement("div");
   modalEl.className = "modal-bg";
-  modalEl.innerHTML = `<div class="modal">${html}</div>`;
+  modalEl.innerHTML = `<div class="modal ${cls}">${html}</div>`;
   modalEl.onclick = (e) => {
     if (e.target === modalEl) closeModal();
   };
@@ -45,6 +49,25 @@ function askText({ title, label, type = "text", placeholder = "", ok = "Valider"
     inp.onkeydown = (e) => e.key === "Enter" && done();
   });
 }
+/* Confirmation explicite, en langage clair, avant toute action destructrice */
+function confirmAction({ title, text, ok = "Confirmer", danger = true }) {
+  return new Promise((resolve) => {
+    modal(
+      `<div class="modal-head"><h3>${esc(title)}</h3><button class="x-btn" data-close>${ico("x")}</button></div>
+    <div class="modal-body"><p class="lead">${text}</p>
+      <div style="display:flex;gap:10px;margin-top:18px">
+        <button class="btn btn-ghost" data-close>Annuler</button>
+        <button class="btn ${danger ? "btn-danger" : "btn-primary"}" style="flex:1" id="confirmOk">${esc(ok)}</button>
+      </div></div>`,
+      () => resolve(false),
+    );
+    $("#confirmOk").onclick = () => {
+      modalOnClose = null;
+      closeModal();
+      resolve(true);
+    };
+  });
+}
 /* Photo de profil : réduite à 256 px avant envoi (l'API refuse les images trop lourdes) */
 function readPhoto(e, cb) {
   const f = e.target.files[0];
@@ -68,6 +91,49 @@ function readPhoto(e, cb) {
 const afterCatalogueChange = () =>
   session.view === "catalogue" ? refreshCatalogue().catch((e) => toast(errMsg(e), true)) : renderView({ keepScroll: true });
 
+/* Après chaque rendu : le curseur se place là où l'utilisateur va taper */
+function afterRender(view) {
+  if (view === "comptoir" && !comptoirSearch) $("#prodSearch")?.focus();
+  if (view === "vente") ($("#addSearch") || $("#clientSearch"))?.focus();
+}
+
+/* ---------------------------------------------------------------------------
+   Produit hors catalogue : la « vente manuelle » devenue contextuelle
+   --------------------------------------------------------------------------- */
+function freeLineModal() {
+  modal(`<div class="modal-head"><h3>Ajouter un produit hors catalogue</h3><button class="x-btn" data-close>${ico("x")}</button></div>
+  <div class="modal-body">
+    <p class="lead" style="margin-bottom:16px">Pour un produit absent du catalogue OptiDesk. Il est ajouté à cette vente uniquement : le catalogue n'est pas modifié, et la couverture ne peut pas être calculée automatiquement.</p>
+    <div class="form-grid">
+      <div class="field"><label>Nom du produit</label><input id="flName" maxlength="150" placeholder="ex. Sirop antitussif 150 ml"></div>
+      <div class="field"><label>Prix de vente (FCFA)</label><input id="flPrice" type="number" min="0" placeholder="0"></div>
+      <div class="field"><label>Quantité</label><input id="flQty" type="number" min="1" value="1"></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:18px">
+      <button class="btn btn-ghost" data-close>Annuler</button>
+      <button class="btn btn-primary" style="flex:1" id="flOk">Ajouter au panier</button>
+    </div>
+  </div>`);
+  $("#flName").focus();
+  $("#flOk").onclick = () => {
+    const name = $("#flName").value.trim();
+    const price = $("#flPrice").value;
+    const q = Math.round(+$("#flQty").value || 1);
+    if (!name || price === "" || !(+price >= 0) || q < 1)
+      return toast("Renseignez le nom, un prix et une quantité d'au moins 1.", true);
+    if (sale.slip) resetSale(); // la vente précédente est close : on en ouvre une nouvelle
+    if (!saleStarted()) {
+      sale.type = "simple";
+      sale.step = 3;
+    }
+    addFreeLine(name, Math.round(+price), q);
+    closeModal();
+    toast(`${name} ajouté au panier.`);
+    if (session.view !== "vente") return go("vente");
+    renderView({ keepScroll: true });
+  };
+}
+
 /* ---------------------------------------------------------------------------
    Produit, client, règle, compte
    --------------------------------------------------------------------------- */
@@ -80,24 +146,22 @@ async function productModal(p) {
     <div class="two-col">
       <div class="field"><label>Nom commercial *</label><input id="pName" value="${esc(p.name)}"></div>
       <div class="field"><label>DCI</label><input id="pDci" value="${esc(p.dci)}"></div>
-      <div class="field"><label>Code produit</label><input id="pCode" value="${esc(p.code)}"></div>
-      <div class="field"><label>Catégorie / rayon</label><select id="pCat">${cats.map((c) => `<option ${c.name === p.category ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <div class="field"><label>Code produit</label><input id="pCode" value="${esc(p.code)}"><div class="help">Laissé vide, un code est attribué automatiquement.</div></div>
+      <div class="field"><label>Rayon</label><select id="pCat">${cats.map((c) => `<option ${c.name === p.category ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></div>
       <div class="field"><label>Prix de vente (FCFA) *</label><input id="pPrice" type="number" min="0" value="${p.price}"></div>
       <div class="field"><label>Quantité en stock</label><input id="pStock" type="number" min="0" value="${p.stock}"></div>
       <div class="field"><label>Date de péremption</label><input id="pExpiry" type="date" value="${esc(p.expiry || "")}"></div>
     </div>
     <div style="display:flex;gap:10px;margin-top:18px">
       <button class="btn btn-ghost" data-close>Annuler</button>
-      <button class="btn btn-primary" style="flex:1" id="pSave">${isNew ? "Créer le produit" : "Enregistrer"}</button>
+      <button class="btn btn-primary" style="flex:1" id="pSave">${isNew ? "Créer le produit" : "Enregistrer les modifications"}</button>
     </div>
   </div>`);
+  $("#pName").focus();
   $("#pSave").onclick = async () => {
     const name = $("#pName").value.trim(),
       priceRaw = $("#pPrice").value;
-    if (!name || priceRaw === "" || !(+priceRaw >= 0)) {
-      toast("Renseignez au moins le nom et le prix.", true);
-      return;
-    }
+    if (!name || priceRaw === "" || !(+priceRaw >= 0)) return toast("Renseignez au moins le nom et le prix.", true);
     const body = {
       name,
       dci: $("#pDci").value.trim(),
@@ -132,14 +196,15 @@ async function clientModal(c) {
       <div class="field"><label>Prénom *</label><input id="cFirst" value="${esc(c.first_name)}"></div>
       <div class="field"><label>Organisme assureur</label><select id="cIns">${insurers.map((x) => `<option ${x === c.insurer ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div>
       <div class="field"><label>Numéro d'assuré</label><input id="cPol" value="${esc(c.policy_number)}"></div>
-      <div class="field"><label>Validité de la couverture</label><input id="cVal" type="date" value="${esc(c.valid_until || "")}"></div>
-      <div class="field"><label>Photo (optionnel)</label><div class="photo-drop" id="cPhotoDrop" style="padding:11px">${ico("camera", 14)} Choisir une photo</div><input type="file" id="cPhotoInput" accept="image/*" hidden></div>
+      <div class="field"><label>Couverture valable jusqu'au</label><input id="cVal" type="date" value="${esc(c.valid_until || "")}"></div>
+      <div class="field"><label>Photo (facultatif)</label><div class="photo-drop" id="cPhotoDrop" style="padding:11px">${ico("camera", 14)} Choisir une photo</div><input type="file" id="cPhotoInput" accept="image/*" hidden></div>
     </div>
     <div style="display:flex;gap:10px;margin-top:18px">
       <button class="btn btn-ghost" data-close>Annuler</button>
-      <button class="btn btn-primary" style="flex:1" id="cSave">${isNew ? "Créer le client" : "Enregistrer"}</button>
+      <button class="btn btn-primary" style="flex:1" id="cSave">${isNew ? "Créer le client" : "Enregistrer les modifications"}</button>
     </div>
   </div>`);
+  $("#cLast").focus();
   let photo; // undefined = inchangée
   $("#cPhotoDrop").onclick = () => $("#cPhotoInput").click();
   $("#cPhotoInput").onchange = (e) =>
@@ -150,10 +215,7 @@ async function clientModal(c) {
   $("#cSave").onclick = async () => {
     const f = $("#cFirst").value.trim(),
       l = $("#cLast").value.trim();
-    if (!f || !l) {
-      toast("Renseignez le nom de famille et le prénom.", true);
-      return;
-    }
+    if (!f || !l) return toast("Renseignez le nom de famille et le prénom.", true);
     const body = {
       first_name: f,
       last_name: l,
@@ -163,10 +225,21 @@ async function clientModal(c) {
     };
     if (photo !== undefined) body.photo = photo;
     try {
-      if (isNew) await api("/clients", { method: "POST", body });
-      else await api(`/clients/${c.id}`, { method: "PATCH", body });
+      const saved = isNew
+        ? await api("/clients", { method: "POST", body })
+        : await api(`/clients/${c.id}`, { method: "PATCH", body });
+      CCACHE.set(saved.id, saved);
       closeModal();
       toast(isNew ? "Client créé, immédiatement utilisable au comptoir." : "Fiche mise à jour (modification journalisée).");
+      // Créé au milieu d'une vente assurée : on l'attache tout de suite
+      if (isNew && session.view === "vente" && sale.type === "assuree" && !sale.client) {
+        sale.client = saved;
+        sale.step = 2;
+        USUAL = null;
+      } else if (!isNew && sale.client?.id === saved.id) {
+        sale.client = saved;
+      }
+      if (session.view === "clients") clientsState.selectedId = saved.id;
       renderView({ keepScroll: true });
     } catch (e) {
       toast(errMsg(e), true);
@@ -180,11 +253,12 @@ async function ruleModal(r) {
   const scopes = ["Tous", "Tous médicaments", ...cats.map((c) => c.name)];
   modal(`<div class="modal-head"><h3>${isNew ? "Nouvelle règle de couverture" : "Modifier la règle"}</h3><button class="x-btn" data-close>${ico("x")}</button></div>
   <div class="modal-body">
+    <p class="lead" style="margin-bottom:16px">Une règle répond à une question simple : pour cet organisme, quelle part est prise en charge sur ce type de produits ?</p>
     <div class="two-col">
       <div class="field"><label>Organisme assureur</label><select id="rIns">${insurers.map((x) => `<option ${x === r.insurer ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div>
-      <div class="field"><label>Périmètre</label><select id="rScope">${scopes.map((x) => `<option ${x === r.scope ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div>
-      <div class="field"><label>Taux de prise en charge (%)</label><input id="rRate" type="number" min="0" max="100" value="${r.rate}"></div>
-      <div class="field"><label>Exclusion (catégorie, optionnel)</label><input id="rExc" value="${esc(r.exclusion || "")}" placeholder="ex. Parapharmacie"></div>
+      <div class="field"><label>S'applique à</label><select id="rScope">${scopes.map((x) => `<option ${x === r.scope ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div>
+      <div class="field"><label>Part prise en charge (%)</label><input id="rRate" type="number" min="0" max="100" value="${r.rate}"></div>
+      <div class="field"><label>Rayon jamais pris en charge</label><input id="rExc" value="${esc(r.exclusion || "")}" placeholder="ex. Parapharmacie"><div class="help">Facultatif. Ce rayon reste à la charge du client.</div></div>
     </div>
     <div class="field" style="margin-top:14px"><label>Note interne</label><input id="rNote" value="${esc(r.note || "")}"></div>
     <div style="display:flex;gap:10px;margin-top:18px">
@@ -194,10 +268,7 @@ async function ruleModal(r) {
   </div>`);
   $("#rSave").onclick = async () => {
     const rate = +$("#rRate").value;
-    if ($("#rRate").value === "" || !(rate >= 0 && rate <= 100)) {
-      toast("Le taux doit être compris entre 0 et 100.", true);
-      return;
-    }
+    if ($("#rRate").value === "" || !(rate >= 0 && rate <= 100)) return toast("La part prise en charge doit être comprise entre 0 et 100 %.", true);
     const body = {
       insurer: $("#rIns").value,
       scope: $("#rScope").value,
@@ -209,7 +280,7 @@ async function ruleModal(r) {
       if (isNew) await api("/rules", { method: "POST", body });
       else await api(`/rules/${r.id}`, { method: "PATCH", body });
       closeModal();
-      toast("Règle enregistrée, historisée dans le journal.");
+      toast("Règle enregistrée et historisée dans le journal.");
       renderView({ keepScroll: true });
     } catch (e) {
       toast(errMsg(e), true);
@@ -222,7 +293,7 @@ function userModal() {
     <div class="field" style="margin-bottom:14px"><label>Nom complet (nom, puis prénom) *</label><input id="uName" placeholder="ex. AGBEVON Rachelle"></div>
     <div class="field" style="margin-bottom:14px"><label>Rôle</label><select id="uRole"><option value="vendeur">Vendeur / Préparateur</option><option value="admin">Titulaire / Administrateur</option></select></div>
     <div class="field"><label>Code PIN (4 chiffres) *</label><input id="uPin" type="password" maxlength="4" inputmode="numeric" placeholder="····" style="letter-spacing:8px;text-align:center;font-size:17px"></div>
-    <div class="photo-drop" id="uPhotoDrop" style="margin-top:14px">${ico("camera", 16)} Photo de profil (optionnel)</div>
+    <div class="photo-drop" id="uPhotoDrop" style="margin-top:14px">${ico("camera", 16)} Photo de profil (facultatif)</div>
     <input type="file" id="uPhotoInput" accept="image/*" hidden>
     <div style="display:flex;gap:10px;margin-top:18px">
       <button class="btn btn-ghost" data-close>Annuler</button>
@@ -230,6 +301,7 @@ function userModal() {
     </div>
   </div>`);
   let photo = null;
+  $("#uName").focus();
   $("#uPhotoDrop").onclick = () => $("#uPhotoInput").click();
   $("#uPhotoInput").onchange = (e) =>
     readPhoto(e, (f) => {
@@ -239,10 +311,7 @@ function userModal() {
   $("#uSave").onclick = async () => {
     const name = $("#uName").value.trim(),
       pin = $("#uPin").value.trim();
-    if (!name || !/^\d{4}$/.test(pin)) {
-      toast("Renseignez le nom et un code PIN de 4 chiffres.", true);
-      return;
-    }
+    if (!name || !/^\d{4}$/.test(pin)) return toast("Renseignez le nom et un code PIN de 4 chiffres.", true);
     try {
       await api("/users", { method: "POST", body: { name, role: $("#uRole").value, pin, photo } });
       closeModal();
@@ -260,7 +329,7 @@ function userModal() {
 let authSel = null,
   authPin = "",
   authBusy = false;
-let authMode = "login", // "login" (PIN) ou "signup" (création de compte autorisée par le titulaire)
+let authMode = "login", // "login" (PIN) ou "signup" (création autorisée par le titulaire)
   signupPhoto = null;
 let ACCOUNTS = [],
   authError = "";
@@ -293,7 +362,6 @@ function setAuthMode(m) {
     right.classList.remove("swapping");
   }, 300);
 }
-
 function renderSignup() {
   signupPhoto = null;
   $("#authRight").innerHTML = `
@@ -327,14 +395,8 @@ function renderSignup() {
       p = $("#suPin").value.trim(),
       ap = $("#suAdminPin").value.trim(),
       role = $("#suRole").value;
-    if (!name || !/^\d{4}$/.test(p)) {
-      toast("Renseignez le nom et un code PIN de 4 chiffres.", true);
-      return;
-    }
-    if (!/^\d{4}$/.test(ap)) {
-      toast("Le PIN du titulaire est nécessaire pour autoriser la création du compte.", true);
-      return;
-    }
+    if (!name || !/^\d{4}$/.test(p)) return toast("Renseignez le nom et un code PIN de 4 chiffres.", true);
+    if (!/^\d{4}$/.test(ap)) return toast("Le PIN du titulaire est nécessaire pour autoriser la création du compte.", true);
     authBusy = true;
     try {
       await api("/auth/register", {
@@ -374,16 +436,12 @@ async function showAuth() {
 function renderAuth() {
   $(".auth-stage").classList.toggle("signup", authMode === "signup");
   updateAuthFoot();
-  if (authMode === "signup") {
-    renderSignup();
-    return;
-  }
+  if (authMode === "signup") return renderSignup();
   if (authSel) {
     const u = ACCOUNTS.find((x) => x.id === authSel);
     if (!u) {
       authSel = null;
-      renderAuth();
-      return;
+      return renderAuth();
     }
     $("#authRight").innerHTML = `
     <button class="btn btn-ghost sm" id="authBack" style="align-self:flex-start">Autre compte</button>
@@ -416,14 +474,9 @@ function renderAuth() {
 }
 function authKey(k) {
   if (authBusy || !ACCOUNTS.find((x) => x.id === authSel)) return;
-  if (k === "del") {
-    authPin = authPin.slice(0, -1);
-  } else if (k === "ok") {
-    submitPin();
-    return;
-  } else if (/^\d$/.test(k) && authPin.length < 4) {
-    authPin += k;
-  }
+  if (k === "del") authPin = authPin.slice(0, -1);
+  else if (k === "ok") return submitPin();
+  else if (/^\d$/.test(k) && authPin.length < 4) authPin += k;
   $("#authDots")
     ?.querySelectorAll("i")
     .forEach((d, i) => d.classList.toggle("on", i < authPin.length));
@@ -463,12 +516,10 @@ function resetToLogin(msg) {
   tokens.access = tokens.refresh = null;
   USER = null;
   session.userId = null;
-  cart = { client: null, lines: [] };
-  QUOTE = null;
-  manForm = null;
+  resetSale();
+  USUAL = null;
   comptoirSearch = "";
   closeModal();
-  stopCarousel();
   $("#app").classList.remove("show");
   $("#auth").style.display = "flex";
   const st = $("#logoStage");
@@ -496,45 +547,69 @@ function renderUser() {
 /* ---------------------------------------------------------------------------
    Fiche client (fenêtre)
    --------------------------------------------------------------------------- */
-async function clientDetail(id) {
+async function clientData(id) {
   const [c, usual, hist] = await Promise.all([
     api(`/clients/${id}`),
     api(`/clients/${id}/usual-cart`),
     api(`/sales?client_id=${id}&page_size=5`),
   ]);
+  CCACHE.set(c.id, c);
+  return { c, usual, hist };
+}
+/* Corps de fiche : identité, assurance, produits habituels, historique */
+function clientFicheBody(c, usual, hist) {
+  return `<div style="display:flex;gap:14px;align-items:center">
+      <div class="avatar" style="width:52px;height:52px;font-size:16px;border-radius:8px">${avatarHTML(c)}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-family:var(--font-title);font-size:19px">${esc(cname(c))}</div>
+        <div class="mini" style="margin-top:3px">Dernier achat : ${fmtD(c.last_purchase, "aucun")}</div>
+      </div>
+      ${c.coverage_alert ? `<span class="status warn">Couverture échue le ${fmtD(c.valid_until)}</span>` : c.valid_until ? `<span class="status ok">Valide jusqu'au ${fmtD(c.valid_until)}</span>` : `<span class="status neutral">Validité non renseignée</span>`}
+    </div>
+    <div class="divider"></div>
+    <div class="kv">
+      <div><div class="lbl">Organisme</div><b>${esc(c.insurer)}</b></div>
+      <div><div class="lbl">Numéro d'assuré</div><b>${esc(c.policy_number || "non renseigné")}</b></div>
+      <div><div class="lbl">Ventes enregistrées</div><b>${hist.total}</b></div>
+    </div>
+    <div class="section">
+      <div class="section-head"><h2>Produits habituels</h2>
+        ${usual.lines.length ? `<div class="right"><button class="btn btn-soft sm" data-usual="${c.id}">Utiliser le panier habituel</button></div>` : ""}</div>
+      ${
+        usual.lines.length
+          ? `<div class="rows">${usual.lines
+              .map(
+                (x) => `<div class="r"><span>${esc(x.name)}</span><b class="mini">× ${x.quantity}</b>
+        ${covTag(x.coverage)}<span class="amt">${fmt(x.price * x.quantity)}</span></div>`,
+              )
+              .join("")}</div>`
+          : `<p class="mini">Aucun achat récurrent pour l'instant : les produits habituels se construisent au fil des ventes.</p>`
+      }
+    </div>
+    <div class="section">
+      <div class="section-head"><h2>Dernières ventes</h2></div>
+      ${
+        hist.items.length
+          ? `<div class="rows">${hist.items
+              .map(
+                (sv) => `<div class="r"><span>${esc(sv.reference)}</span><span class="mini">${fmtD(sv.date)}</span>
+        ${sv.type === "assuree" ? `<span class="tag ok">assurée</span>` : `<span class="tag">simple</span>`}
+        <span class="amt">${fmt(sv.totals.gross_total)}</span></div>`,
+              )
+              .join("")}</div>`
+          : `<p class="mini">Aucune vente enregistrée dans OptiDesk pour ce client.</p>`
+      }
+    </div>`;
+}
+/* Version fenêtre, ouverte depuis le comptoir */
+async function clientDetail(id) {
+  const { c, usual, hist } = await clientData(id);
   return `<div class="modal-head"><h3>Fiche client</h3><button class="x-btn" data-close>${ico("x")}</button></div>
   <div class="modal-body">
-    <div style="display:flex;gap:15px;align-items:center">
-      <div class="avatar" style="width:60px;height:60px;font-size:18px">${avatarHTML(c)}</div>
-      <div style="flex:1"><b style="font-size:17px">${esc(cname(c))}</b>
-      <div style="margin-top:5px">${c.coverage_alert ? `<span class="tag warn">Couverture à vérifier (valide jusqu'au ${fmtD(c.valid_until)})</span>` : c.valid_until ? `<span class="tag ok">Couverture valide jusqu'au ${fmtD(c.valid_until)}</span>` : `<span class="tag">Validité non renseignée</span>`}</div></div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px">
-      <div style="padding:12px;background:var(--side);border-radius:11px"><div class="mini">Organisme</div><b>${esc(c.insurer)}</b></div>
-      <div style="padding:12px;background:var(--side);border-radius:11px"><div class="mini">Numéro d'assuré</div><b>${esc(c.policy_number || "·")}</b></div>
-    </div>
-    ${
-      usual.lines.length
-        ? `<div style="margin-top:16px"><b style="font-size:14px">Produits achetés habituellement</b>
-      <div style="margin-top:8px;display:flex;flex-direction:column;gap:7px">${usual.lines
-        .map(
-          (x) => `
-        <div style="display:flex;align-items:center;gap:10px;padding:9px 11px;background:var(--side);border-radius:10px;font-size:13px">
-          <span style="flex:1">${esc(x.name)}</span><b>×${x.quantity}</b>${covTag(x.coverage)}</div>`,
-        )
-        .join("")}</div>
-      <button class="btn btn-primary lg" style="width:100%;margin-top:12px" data-usual="${c.id}">Reprendre le panier habituel</button></div>`
-        : ""
-    }
-    ${
-      hist.items.length
-        ? `<div style="margin-top:16px"><b style="font-size:14px">Dernières ventes</b>
-      <div style="margin-top:8px">${hist.items.map((s) => `<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px"><span>${esc(s.reference)} · ${fmtD(s.date)}</span><b>${fmt(s.totals.gross_total)}</b></div>`).join("")}</div></div>`
-        : ""
-    }
-    <div style="display:flex;gap:10px;margin-top:18px">
-      <button class="btn btn-ghost" data-editclient="${c.id}">Modifier</button>
-      <button class="btn btn-primary" style="flex:1" data-sell="${c.id}">Nouvelle vente assurée</button>
+    ${clientFicheBody(c, usual, hist)}
+    <div style="display:flex;gap:10px;margin-top:20px">
+      <button class="btn btn-ghost" data-editclient="${c.id}">Modifier la fiche</button>
+      <button class="btn btn-primary" style="flex:1" data-sell="${c.id}">Démarrer une vente assurée</button>
     </div>
   </div>`;
 }
@@ -543,12 +618,20 @@ async function clientDetail(id) {
    Événements
    --------------------------------------------------------------------------- */
 const CLICK_TARGETS =
-  "[data-nav],[data-gov],[data-user],[data-k],[data-freq],[data-fol],[data-usual],[data-addcart],[data-q],[data-line],[data-rm],[data-detach],[data-validate],[data-clearcart],[data-newclient],[data-editclient],[data-sell],[data-newproduct],[data-editproduct],[data-delproduct],[data-toggle],[data-stock],[data-cats],[data-delcat],[data-import],[data-export],[data-newrule],[data-editrule],[data-newuser],[data-toggleuser],[data-close],[data-savemodel],[data-model],[data-delmodel],[data-saveprofile],[data-cat],[data-addline],[data-rmline],[data-saveman],[data-resetman],[data-retry],[data-catmore]";
+  "[data-nav],[data-user],[data-k],[data-freq],[data-fol],[data-usual],[data-skipusual],[data-addcart]," +
+  "[data-q],[data-rm],[data-detach],[data-validate],[data-clearcart],[data-newclient],[data-editclient]," +
+  "[data-sell],[data-pickclient],[data-newproduct],[data-editproduct],[data-delproduct],[data-toggle]," +
+  "[data-stock],[data-cats],[data-delcat],[data-import],[data-export],[data-newrule],[data-editrule]," +
+  "[data-newuser],[data-toggleuser],[data-close],[data-savemodel],[data-model],[data-delmodel]," +
+  "[data-saveprofile],[data-cat],[data-retry],[data-catmore],[data-type],[data-step],[data-newsale]," +
+  "[data-settab],[data-clientrow]," +
+  "[data-cancelsale],[data-slip],[data-freeline],[data-clearsearch]";
 
 async function handleClick(d) {
+  /* --- navigation générale --- */
   if (d.nav) return go(d.nav);
-  if (d.gov) return go(d.gov);
   if (d.retry !== undefined) return renderView();
+  if (d.close !== undefined) return closeModal();
   if (d.user) {
     authSel = +d.user;
     authPin = "";
@@ -556,85 +639,199 @@ async function handleClick(d) {
   }
   if (d.k) return authKey(d.k);
   if (d.fol) return scrollFol(+d.fol);
-  if (d.freq) return modal(await clientDetail(+d.freq));
+  if (d.clearsearch !== undefined) {
+    comptoirSearch = "";
+    return renderView();
+  }
+
+  /* --- parcours de vente --- */
+  if (d.newsale !== undefined) {
+    if (sale.slip || !sale.lines.length) resetSale();
+    return go("vente");
+  }
+  if (d.cancelsale !== undefined) {
+    if (sale.lines.length && !(await confirmAction({
+      title: "Abandonner cette vente ?",
+      text: `Le panier en cours (${cartCount()} article(s)) sera vidé. Aucune vente n'aura été enregistrée.`,
+      ok: "Abandonner la vente",
+    })))
+      return;
+    resetSale();
+    USUAL = null;
+    toast("Vente abandonnée.");
+    return go("comptoir");
+  }
+  if (d.type) {
+    sale.type = d.type;
+    sale.step = d.type === "assuree" ? 2 : 3;
+    return renderView();
+  }
+  if (d.step) {
+    sale.step = +d.step;
+    return renderView();
+  }
+  if (d.validate !== undefined) return validateSale();
+  if (d.slip !== undefined) return sale.slip && showBordereau(sale.slip);
+  if (d.freeline !== undefined) return freeLineModal();
+  if (d.skipusual !== undefined) {
+    sale.step = 3;
+    return renderView();
+  }
+  if (d.detach !== undefined) {
+    sale.client = null;
+    USUAL = null;
+    return renderView();
+  }
+  if (d.pickclient) {
+    sale.client = CCACHE.get(+d.pickclient) || (await api(`/clients/${+d.pickclient}`));
+    USUAL = null;
+    sale.type = "assuree";
+    sale.step = 2;
+    return renderView();
+  }
+  if (d.sell) {
+    const c = CCACHE.get(+d.sell) || (await api(`/clients/${+d.sell}`));
+    closeModal();
+    USUAL = null;
+    return startSale({ type: "assuree", client: c, step: 2 });
+  }
   if (d.usual) {
     const id = +d.usual;
     const [c, usual] = await Promise.all([api(`/clients/${id}`), api(`/clients/${id}/usual-cart`)]);
     if (!usual.lines.length) return toast("Aucun panier habituel pour ce client.");
-    cart = {
-      client: c,
-      lines: usual.lines.map((l) => ({ p: l.product_id, name: l.name, price: l.price, q: l.quantity })),
-    };
     closeModal();
-    toast(`Panier habituel de ${prenom(c.first_name)} reconstitué (${usual.lines.length} produits).`);
-    return go("vente");
+    sale.type = "assuree";
+    sale.client = c;
+    sale.slip = null;
+    sale.lines = usual.lines.map((l) => ({ p: l.product_id, name: l.name, price: l.price, q: l.quantity }));
+    sale.step = 3;
+    USUAL = usual;
+    toast(`Panier habituel de ${prenom(c.first_name)} repris (${usual.lines.length} produits).`);
+    return session.view === "vente" ? renderView() : go("vente");
   }
   if (d.addcart) {
     const p = PCACHE.get(+d.addcart);
-    if (!p) return toast("Produit introuvable : relancez la recherche.", true);
+    if (!p) return toast("Ce produit n'est plus affiché : relancez la recherche.", true);
+    if (sale.slip) resetSale(); // la vente précédente est close : on en ouvre une nouvelle
+    if (!saleStarted()) {
+      sale.type = "simple";
+      sale.step = 3;
+    }
     addProduct(p, 1);
-    toast("Produit ajouté au panier.");
     closeModal();
-    if (session.view !== "vente") return go("vente");
+    toast(`${p.name} ajouté au panier.`);
     return renderView({ keepScroll: true });
   }
   if (d.q !== undefined && d.line !== undefined) {
-    const l = cart.lines[+d.line];
-    if (l) {
-      l.q = Math.max(1, l.q + +d.q);
-      return renderView({ keepScroll: true });
+    const l = sale.lines[+d.line];
+    if (l) l.q = Math.max(1, l.q + +d.q);
+    return renderView({ keepScroll: true });
+  }
+  if (d.rm !== undefined) {
+    sale.lines.splice(+d.rm, 1);
+    return renderView({ keepScroll: true });
+  }
+  if (d.clearcart !== undefined) {
+    if (!(await confirmAction({ title: "Vider le panier ?", text: "Tous les produits ajoutés seront retirés de cette vente.", ok: "Vider le panier" })))
+      return;
+    sale.lines = [];
+    QUOTE = null;
+    return renderView({ keepScroll: true });
+  }
+  if (d.savemodel !== undefined) {
+    const name = await askText({
+      title: "Enregistrer une vente récurrente",
+      label: "Nom du modèle (ex. Ordonnance ALD, M. TCHALLA)",
+      ok: "Enregistrer le modèle",
+    });
+    if (!name) return;
+    const body = {
+      name,
+      lines: sale.lines.map((l) => (l.p !== null ? { product_id: l.p, quantity: l.q } : { name: l.name, price: l.price, quantity: l.q })),
+    };
+    if (sale.client) body.client_id = sale.client.id;
+    await api("/sales/models", { method: "POST", body });
+    toast("Modèle enregistré, rappelable en un clic.");
+    return renderView({ keepScroll: true });
+  }
+  if (d.model) {
+    const m = MODELS.find((x) => x.id == +d.model);
+    if (!m) return;
+    sale.lines = m.lines.map((l) => ({ p: l.product_id, name: l.name, price: l.price, q: l.quantity }));
+    if (m.client_id && !sale.client) {
+      sale.client = await api(`/clients/${m.client_id}`);
+      sale.type = "assuree";
+    }
+    toast(`Modèle « ${m.name} » chargé dans le panier.`);
+    return renderView({ keepScroll: true });
+  }
+  if (d.delmodel) {
+    if (!(await confirmAction({ title: "Supprimer ce modèle ?", text: "Le modèle de vente récurrente ne sera plus proposé. Les ventes déjà enregistrées ne changent pas.", ok: "Supprimer le modèle" })))
+      return;
+    await api(`/sales/models/${+d.delmodel}`, { method: "DELETE" });
+    toast("Modèle supprimé.");
+    return renderView({ keepScroll: true });
+  }
+  if (d.cat) {
+    const r = await api(`/products?category=${enc(d.cat)}&limit=200${sale.client ? `&client_id=${sale.client.id}` : ""}`);
+    rememberP(r.items);
+    return modal(`<div class="modal-head"><h3>Rayon : ${esc(d.cat)}</h3><button class="x-btn" data-close>${ico("x")}</button></div>
+        <div class="modal-body"><div style="display:flex;flex-direction:column;gap:8px">${
+          r.items
+            .map(
+              (p) => `<div class="pick">
+            <div class="who"><div class="nm">${esc(p.name)}</div>
+              <div class="meta">${fmt(p.price)} · ${p.stock > 0 ? p.stock + " en stock" : "en rupture"}</div></div>
+            ${p.coverage ? covTag(p.coverage) : ""}
+            <button class="btn btn-primary sm" data-addcart="${p.id}">Ajouter</button></div>`,
+            )
+            .join("") || '<p class="mini">Aucun produit dans ce rayon.</p>'
+        }</div>${r.total > r.items.length ? `<p class="mini" style="margin-top:10px">${r.total} produits dans ce rayon : utilisez la recherche pour affiner.</p>` : ""}</div>`, null, "wide");
+  }
+
+  /* --- clients --- */
+  if (d.clientrow) {
+    clientsState.selectedId = +d.clientrow;
+    const box = $("#clDetail");
+    if (box) {
+      document.querySelectorAll("#clList .list-row").forEach((el) => el.classList.toggle("on", el.dataset.clientrow === d.clientrow));
+      box.innerHTML = `<div class="panel"><div class="loading-line"><span class="spin"></span> Ouverture de la fiche…</div></div>`;
+      box.innerHTML = await clientFicheHTML(clientsState.selectedId);
     }
     return;
   }
-  if (d.rm !== undefined) {
-    cart.lines.splice(+d.rm, 1);
-    return renderView({ keepScroll: true });
+  if (d.settab) {
+    setTab = d.settab;
+    return renderView();
   }
-  if (d.detach !== undefined) {
-    cart.client = null;
-    return renderView({ keepScroll: true });
-  }
-  if (d.validate !== undefined) return validateQuickSale();
-  if (d.clearcart !== undefined) {
-    cart.lines = [];
-    return renderView({ keepScroll: true });
-  }
+  if (d.freq) return modal(await clientDetail(+d.freq), null, "wide");
   if (d.newclient !== undefined) return clientModal(null);
   if (d.editclient) return clientModal(await api(`/clients/${+d.editclient}`));
-  if (d.sell) {
-    cart = { client: await api(`/clients/${+d.sell}`), lines: [] };
-    closeModal();
-    return go("vente");
-  }
+
+  /* --- catalogue --- */
   if (d.newproduct !== undefined) return productModal(null);
   if (d.editproduct) {
     const p = PCACHE.get(+d.editproduct);
     return p ? productModal(p) : toast("Produit introuvable : actualisez le catalogue.", true);
   }
-  if (d.cats !== undefined) return categoriesModal();
-  if (d.delcat) {
-    await api(`/categories/${enc(d.delcat)}`, { method: "DELETE" });
-    closeModal();
-    toast("Catégorie supprimée.");
-    return renderView({ keepScroll: true });
-  }
   if (d.delproduct) {
     const p = PCACHE.get(+d.delproduct);
     if (!p) return;
-    modal(`<div class="modal-head"><h3>Supprimer ce produit ?</h3><button class="x-btn" data-close>${ico("x")}</button></div>
-        <div class="modal-body"><p>« <b>${esc(p.name)}</b> » sera définitivement retiré du catalogue OptiDesk. Winpharma n'est pas affecté.</p>
-        <div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-ghost" data-close>Annuler</button>
-        <button class="btn btn-danger" style="flex:1" id="delOk">Supprimer définitivement</button></div></div>`);
-    $("#delOk").onclick = async () => {
-      try {
-        await api(`/products/${p.id}`, { method: "DELETE" });
-        closeModal();
-        toast("Produit supprimé.");
-        afterCatalogueChange();
-      } catch (e) {
-        toast(errMsg(e), true);
-      }
-    };
+    if (
+      !(await confirmAction({
+        title: "Supprimer ce produit ?",
+        text: `« <b>${esc(p.name)}</b> » sera définitivement retiré du catalogue OptiDesk. Les ventes déjà enregistrées le conservent. Winpharma n'est pas affecté.`,
+        ok: "Supprimer définitivement",
+      }))
+    )
+      return;
+    try {
+      await api(`/products/${p.id}`, { method: "DELETE" });
+      toast("Produit supprimé du catalogue.");
+      afterCatalogueChange();
+    } catch (e) {
+      toast(errMsg(e), true);
+    }
     return;
   }
   if (d.stock !== undefined && d.pid !== undefined) {
@@ -652,64 +849,39 @@ async function handleClick(d) {
     catState.limit += 50;
     return refreshCatalogue();
   }
+  if (d.cats !== undefined) return categoriesModal();
+  if (d.delcat) {
+    if (!(await confirmAction({ title: "Supprimer ce rayon ?", text: `Le rayon « ${esc(d.delcat)} » sera retiré du catalogue.`, ok: "Supprimer le rayon" }))) return;
+    try {
+      await api(`/categories/${enc(d.delcat)}`, { method: "DELETE" });
+      toast("Rayon supprimé.");
+      renderView({ keepScroll: true });
+    } catch (e) {
+      toast(errMsg(e), true);
+    }
+    return;
+  }
   if (d.import !== undefined) return importModal();
   if (d.export !== undefined) return exportCSV();
+
+  /* --- couverture, comptes, profil --- */
   if (d.newrule !== undefined) return ruleModal(null);
   if (d.editrule) return ruleModal(RULES.find((r) => r.id == +d.editrule));
   if (d.newuser !== undefined) return userModal();
   if (d.toggleuser) {
     const activate = d.active !== "1";
+    if (
+      !activate &&
+      !(await confirmAction({
+        title: "Désactiver ce compte ?",
+        text: "La personne ne pourra plus se connecter. Ses actions passées restent dans le journal d'audit, et le compte peut être réactivé à tout moment.",
+        ok: "Désactiver le compte",
+      }))
+    )
+      return;
     await api(`/users/${+d.toggleuser}/active`, { method: "PATCH", body: { active: activate } });
     toast(activate ? "Compte réactivé." : "Compte désactivé.");
     return renderView({ keepScroll: true });
-  }
-  if (d.close !== undefined) return closeModal();
-  if (d.savemodel !== undefined) {
-    const name = await askText({
-      title: "Vente récurrente",
-      label: "Nom du modèle (ex. Ordonnance ALD, M. TCHALLA)",
-      ok: "Enregistrer le modèle",
-    });
-    if (!name) return;
-    const body = {
-      name,
-      lines: cart.lines.map((l) =>
-        l.p !== null
-          ? { product_id: l.p, quantity: l.q }
-          : { name: l.name, price: l.price, quantity: l.q },
-      ),
-    };
-    if (cart.client) body.client_id = cart.client.id;
-    await api("/sales/models", { method: "POST", body });
-    toast("Modèle enregistré, rappelable en un clic.");
-    return renderView({ keepScroll: true });
-  }
-  if (d.model) {
-    const m = MODELS.find((x) => x.id == +d.model);
-    if (!m) return;
-    cart.lines = m.lines.map((l) => ({ p: l.product_id, name: l.name, price: l.price, q: l.quantity }));
-    if (m.client_id && !cart.client) cart.client = await api(`/clients/${m.client_id}`);
-    toast(`Modèle « ${m.name} » chargé.`);
-    return renderView({ keepScroll: true });
-  }
-  if (d.delmodel) {
-    await api(`/sales/models/${+d.delmodel}`, { method: "DELETE" });
-    return renderView({ keepScroll: true });
-  }
-  if (d.cat) {
-    const r = await api(`/products?category=${enc(d.cat)}&limit=200`);
-    rememberP(r.items);
-    return modal(`<div class="modal-head"><h3>Rayon : ${esc(d.cat)}</h3><button class="x-btn" data-close>${ico("x")}</button></div>
-        <div class="modal-body"><div style="display:flex;flex-direction:column;gap:8px">${
-          r.items
-            .map(
-              (p) => `
-          <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--side);border-radius:11px">
-            <div style="flex:1"><b style="font-size:13.5px">${esc(p.name)}</b><div class="mini">${fmt(p.price)} · ${p.stock > 0 ? p.stock + " en stock" : "rupture"}</div></div>
-            <button class="btn btn-primary sm" data-addcart="${p.id}" data-close>Ajouter</button></div>`,
-            )
-            .join("") || '<p class="mini">Aucun produit dans ce rayon.</p>'
-        }</div>${r.total > r.items.length ? `<p class="mini" style="margin-top:10px">${r.total} produits dans ce rayon : utilisez la recherche pour affiner.</p>` : ""}</div>`);
   }
   if (d.saveprofile !== undefined) {
     const nn = $("#setUserName").value.trim();
@@ -717,7 +889,7 @@ async function handleClick(d) {
     const body = {};
     if (nn && nn !== USER.name) body.name = nn;
     if (np) {
-      if (!/^\d{4}$/.test(np)) return toast("Le PIN doit contenir exactement 4 chiffres.", true);
+      if (!/^\d{4}$/.test(np)) return toast("Le code PIN doit contenir exactement 4 chiffres.", true);
       const old = await askText({
         title: "Confirmer le changement de PIN",
         label: "Saisissez votre code PIN actuel",
@@ -738,19 +910,6 @@ async function handleClick(d) {
     renderView({ keepScroll: true });
     return toast("Profil mis à jour.");
   }
-  if (d.addline !== undefined) {
-    manForm.lines.push({ name: "", price: "", q: 1 });
-    return renderView({ keepScroll: true });
-  }
-  if (d.rmline) {
-    manForm.lines.splice(+d.rmline, 1);
-    return renderView({ keepScroll: true });
-  }
-  if (d.resetman !== undefined) {
-    manForm = defaultManForm();
-    return renderView({ keepScroll: true });
-  }
-  if (d.saveman !== undefined) return submitManualSale();
 }
 
 document.addEventListener("click", (e) => {
@@ -759,28 +918,15 @@ document.addEventListener("click", (e) => {
     handleClick(t.dataset).catch((err) => toast(errMsg(err), true));
     return;
   }
-  if (e.target.id === "photoDrop") {
-    $("#photoInput").click();
-    return;
-  }
-  if (e.target.id === "createAccountBtn") {
-    setAuthMode("signup");
-    return;
-  }
-  if (e.target.id === "authToLoginBtn") {
-    setAuthMode("login");
-    return;
-  }
+  if (e.target.id === "photoDrop") return $("#photoInput").click();
+  if (e.target.id === "createAccountBtn") return setAuthMode("signup");
+  if (e.target.id === "authToLoginBtn") return setAuthMode("login");
   if (e.target.id === "authBack") {
     authSel = null;
     authPin = "";
-    renderAuth();
-    return;
+    return renderAuth();
   }
-  if (e.target.id === "authRetry") {
-    showAuth();
-    return;
-  }
+  if (e.target.id === "authRetry") return showAuth();
 });
 $("#logoutBtn").onclick = () => logout();
 $("#accountChip").onclick = () => go("parametres");
@@ -790,16 +936,15 @@ const searchClientsVente = debounce(async () => {
   const q = $("#clientSearch")?.value.trim();
   const box = $("#clientResults");
   if (!box) return;
-  if (!q) {
-    box.innerHTML = "";
-    return;
-  }
+  if (!q) return void (box.innerHTML = "");
   try {
     const list = await api(`/clients?q=${enc(q)}&limit=8`);
     rememberC(list);
-    if ($("#clientSearch")?.value.trim() !== q) return;
+    if ($("#clientSearch")?.value.trim() !== q || !$("#clientResults")) return;
     $("#clientResults").innerHTML =
-      list.map(clientResultHTML).join("") || '<p class="mini" style="padding:6px 2px">Aucun client trouvé.</p>';
+      list.map(clientResultHTML).join("") ||
+      `<div class="notice">${ico("empty", 16)}<div>Aucun client à ce nom.</div>
+       <div class="right"><button class="btn btn-soft sm" data-newclient>Créer ce client</button></div></div>`;
   } catch (e) {
     toast(errMsg(e), true);
   }
@@ -807,12 +952,12 @@ const searchClientsVente = debounce(async () => {
 const searchClientsList = debounce(async () => {
   const q = $("#clListSearch")?.value.trim();
   if (q === undefined) return;
+  clientsState.q = q;
   try {
     const list = await api(`/clients?q=${enc(q)}&limit=100`);
     rememberC(list);
     if ($("#clListSearch")?.value.trim() !== q || !$("#clList")) return;
-    $("#clList").innerHTML =
-      list.map((cl) => clientCardHTML(cl)).join("") || `<div class="card empty">Aucun client trouvé.</div>`;
+    $("#clList").innerHTML = clientListHTML(list);
   } catch (e) {
     toast(errMsg(e), true);
   }
@@ -821,24 +966,17 @@ const searchProductsVente = debounce(async () => {
   const q = $("#addSearch")?.value.trim();
   const box = $("#addResults");
   if (!box) return;
-  if (!q) {
-    box.innerHTML = "";
-    return;
-  }
+  if (!q) return void (box.innerHTML = "");
   try {
-    const r = await api(`/products?q=${enc(q)}&limit=6`);
+    const r = await api(`/products?q=${enc(q)}&limit=8&with_alternatives=true${sale.client ? `&client_id=${sale.client.id}` : ""}`);
     rememberP(r.items);
     if ($("#addSearch")?.value.trim() !== q || !$("#addResults")) return;
-    $("#addResults").innerHTML =
-      r.items
-        .map(
-          (p) => `<button class="add-result" data-addcart="${p.id}">
-      <div style="flex:1"><b style="font-size:13.5px">${esc(p.name)}</b><div class="mini">${esc(p.category)} · ${fmt(p.price)}</div></div>
-      ${p.stock > 0 ? `<span class="tag ok">${p.stock}</span>` : `<span class="tag bad">Rupture</span>`}
-      <b style="color:var(--deep)">+</b></button>`,
-        )
-        .join("") ||
-      '<p class="mini" style="padding:6px 2px">Aucun produit. Utilisez la vente manuelle.</p>';
+    $("#addResults").innerHTML = r.items.length
+      ? r.items.map(resultHTML).join("")
+      : `<div class="notice">${ico("empty", 16)}
+         <div><b>Produit introuvable dans le catalogue</b>
+         <div class="mini" style="color:inherit">Rien ne correspond à « ${esc(q)} ».</div></div>
+         <div class="right"><button class="btn btn-soft sm" data-freeline>Ajouter manuellement</button></div></div>`;
   } catch (e) {
     toast(errMsg(e), true);
   }
@@ -856,21 +994,8 @@ document.addEventListener("input", (e) => {
     searchCatalogue();
   }
   if (id === "addSearch") searchProductsVente();
-  if (e.target.dataset.mline !== undefined) {
-    const i = +e.target.dataset.mline,
-      f = e.target.dataset.f;
-    manForm.lines[i][f] = e.target.value;
-    const total = manForm.lines.reduce((t, l) => t + (+l.price || 0) * (+l.q || 0), 0);
-    const el = e.target.closest(".card").querySelector('b[style*="18px"]');
-    if (el) el.textContent = fmt(total);
-  }
-  if (id === "manType") {
-    manForm.type = e.target.value;
-    renderView({ keepScroll: true });
-  }
-  if (id === "manClient") manForm.clientId = e.target.value;
-  if (id === "manNote") manForm.note = e.target.value;
-  if (id === "manDate") manForm.date = e.target.value;
+  if (id === "saleNote") sale.note = e.target.value;
+  if (id === "saleDate") sale.date = e.target.value || todayISO();
 });
 document.addEventListener("change", (e) => {
   const id = e.target.id;
@@ -878,11 +1003,16 @@ document.addEventListener("change", (e) => {
     auditFilter = { user: $("#auditUser").value, days: $("#auditPeriod").value };
     refreshAudit().catch((err) => toast(errMsg(err), true));
   }
+  if (id === "catCategory") {
+    catState.category = e.target.value;
+    catState.limit = 50;
+    refreshCatalogue().catch((err) => toast(errMsg(err), true));
+  }
   if (id === "photoInput") {
     readPhoto(e, (f) => {
       pendingPhoto = f;
       $("#bigAvatar").innerHTML = `<img src="${f}">`;
-      toast("Photo chargée, pensez à enregistrer.");
+      toast("Photo chargée : pensez à enregistrer.");
     });
   }
   if (e.target.dataset.impmap && IMPORT) recountImport(e.target.dataset.impmap, e.target.value);
@@ -897,6 +1027,7 @@ document.addEventListener("change", (e) => {
       else if (e.key === "Backspace") authKey("del");
       else if (e.key === "Enter") authKey("ok");
     }
+    if (e.key === "Escape" && modalEl) closeModal();
   });
 })();
 window.__od3 = true;
