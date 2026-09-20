@@ -1,0 +1,60 @@
+# Fabrique l'installateur Windows (OptiDesk-Setup-x.y.z.exe) sur un serveur GitHub, sans rien installer sur votre PC.
+# Utilisation : onglet « Actions » du dépôt GitHub > « Installateur Windows » > « Run workflow »,
+# puis télécharger l'installateur dans « Artifacts » en bas de l'exécution.
+name: Installateur Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tests de l'API
+        working-directory: api
+        run: |
+          pip install -r requirements-dev.txt
+          python -m pytest -q
+
+      - name: Programme serveur (PyInstaller)
+        working-directory: api
+        run: |
+          pip install pyinstaller
+          pyinstaller optidesk-api.spec --noconfirm
+
+      - name: Vérification du programme serveur compilé
+        working-directory: api
+        shell: pwsh
+        run: |
+          $env:OPTIDESK_PORT = "8799"; $env:OPTIDESK_OPEN_BROWSER = "false"
+          $env:OPTIDESK_DATA_DIR = "$env:RUNNER_TEMP\optidesk-test"
+          $p = Start-Process -FilePath "dist\optidesk-api\optidesk-api.exe" -PassThru -WindowStyle Hidden
+          $ok = $false
+          for ($i = 0; $i -lt 60 -and -not $ok; $i++) {
+            try { $ok = (Invoke-RestMethod "http://127.0.0.1:8799/api/v1/health").status -eq "ok" } catch { Start-Sleep 1 }
+          }
+          if (-not $ok) { throw "Le programme serveur compilé ne démarre pas." }
+          Invoke-WebRequest "http://127.0.0.1:8799/" -UseBasicParsing | Out-Null   # interface embarquée
+          Stop-Process $p -Force
+
+      - name: Installateur (Electron + NSIS)
+        working-directory: desktop
+        run: |
+          npm install
+          npm run dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OptiDesk-Setup
+          path: desktop/dist/OptiDesk-Setup-*.exe

@@ -1,0 +1,47 @@
+{
+  "name": "optidesk",
+  "version": "1.0.0",
+  "description": "OptiDesk — aide à la vente au comptoir et vérification de la couverture assurantielle",
+  "author": "OptiDesk",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "tg.adjololo.optidesk",
+    "productName": "OptiDesk",
+    "copyright": "© 2026 OptiDesk · Pharmacie ADJOLOLO, Lomé (Togo)",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "icon.png", "package.json"],
+    "extraResources": [
+      { "from": "../api/dist/optidesk-api", "to": "api", "filter": ["**/*"] }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.ico",
+      "artifactName": "OptiDesk-Setup-${version}.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OptiDesk",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "language": "1036"
+    }
+  }
+}
